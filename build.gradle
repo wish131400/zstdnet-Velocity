@@ -1,0 +1,68 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'java-library'
+}
+
+version = plugin_version
+group = plugin_group
+
+base {
+    archivesName = 'zstdnet-velocity'
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+java {
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'papermc'
+        url = 'https://repo.papermc.io/repository/maven-public/'
+    }
+}
+
+dependencies {
+    compileOnly "com.velocitypowered:velocity-api:${velocity_api_version}"
+    annotationProcessor "com.velocitypowered:velocity-api:${velocity_api_version}"
+    implementation 'com.github.luben:zstd-jni:1.5.7-7'
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.slf4j:slf4j-api:2.0.9'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
+}
+
+jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from {
+        configurations.runtimeClasspath
+            .findAll { it.name.endsWith('.jar') }
+            .collect { zipTree(it) }
+    }
+
+    exclude 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/*.DSA'
+
+    manifest {
+        attributes([
+            'Specification-Title'    : plugin_id,
+            'Specification-Vendor'   : 'tohsaka',
+            'Specification-Version'  : '1',
+            'Implementation-Title'   : project.name,
+            'Implementation-Version' : archiveVersion,
+            'Implementation-Vendor'  : 'tohsaka',
+            'Automatic-Module-Name'  : plugin_main_class
+        ])
+    }
+}
