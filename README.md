@@ -1,6 +1,7 @@
 # ZstdNet Velocity
-
-`zstdnet-velocity` 是给 **Velocity / VC 代理端** 使用的 ZstdNet 桥接插件。
+- [TrueUUID（VC兼容版）](https://github.com/wish131400/TrueUUID/releases/tag/v1.0.6)
+- [Ambassador](https://github.com/adde0109/Ambassador/releases/tag/v1.4.5)
+`zstdnet-velocity` 是给 **Velocity / VC 代理端** 使用的 ZstdNet 插件。
 
 它的作用很简单：
 
