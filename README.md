@@ -89,9 +89,13 @@ PCF 负责后端侧的 Velocity modern forwarding / CrossStitch 兼容。
 online-mode = false
 player-info-forwarding-mode = "modern"
 forwarding-secret-file = "forwarding.secret"
+ping-passthrough = "DISABLED"
 announce-forge = true
 announce-proxy-commands = true
 ```
+
+如果希望多人游戏列表显示 VC / Velocity 入口自己的 MOTD、版本、玩家数，`ping-passthrough = "DISABLED"` 很重要。
+在 `ALL` / `DESCRIPTION` 等透传模式下，Velocity 可能使用后端的完整 ping 响应或描述信息，客户端看到的就可能是后端服务器信息。
 
 `announce-proxy-commands = true` 很重要。
 如果关掉，客户端可能看不到 `/server` 这类 Velocity 命令。
