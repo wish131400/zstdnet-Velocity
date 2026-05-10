@@ -123,9 +123,11 @@ public final class TcpBridgeService {
         startStatsPrinter(runtimeConfig);
 
         logger.info(
-                "zstdnet-velocity tcp bridge listening on {}:{} -> {}({}:{})",
+                "zstdnet-velocity tcp bridge listening on {}:{} -> velocity({}:{}); default UDP target={}({}:{})",
                 runtimeConfig.listenHost(),
                 runtimeConfig.listenPort(),
+                runtimeConfig.upstreamVelocityHost(),
+                runtimeConfig.upstreamVelocityPort(),
                 initialTarget.get().serverName(),
                 initialTarget.get().host(),
                 initialTarget.get().port()
