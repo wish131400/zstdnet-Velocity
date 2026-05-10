@@ -1,6 +1,8 @@
 # ZstdNet Velocity
-- [TrueUUID（VC兼容版）](https://github.com/wish131400/TrueUUID/releases/tag/v1.0.6)
-- [Ambassador](https://github.com/adde0109/Ambassador/releases/tag/v1.4.5)
+使用前必要的安装
+- [TrueUUID正版离线共存（客户端/服务端）](https://github.com/wish131400/TrueUUID/releases/tag/v1.0.6)
+- [Ambassador（Velocity）](https://github.com/adde0109/Ambassador/releases/tag/v1.4.5)
+- [Proxy-Compatible-Forge（客户端）](https://github.com/adde0109/Proxy-Compatible-Forge/releases)
 
 `zstdnet-velocity` 是给 **Velocity / VC 代理端** 使用的 ZstdNet 插件。
 
