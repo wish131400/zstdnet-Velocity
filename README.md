@@ -1,6 +1,6 @@
 # ZstdNet Velocity
 使用前必要的安装
-- [TrueUUID正版离线共存（客户端/服务端）](https://github.com/wish131400/TrueUUID/releases/tag/v1.0.6)
+- [TrueUUID正版离线共存（客户端/服务端）](https://www.curseforge.com/minecraft/mc-mods/trueuuid)
 - [Ambassador（Velocity）](https://github.com/adde0109/Ambassador/releases/tag/v1.4.5)
 - [Proxy-Compatible-Forge（客户端）](https://github.com/adde0109/Proxy-Compatible-Forge/releases)
 
