@@ -27,6 +27,7 @@ import java.net.ServerSocket;
 import java.net.SocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalTime;
@@ -286,7 +287,7 @@ public final class TcpBridgeService {
             clientSocket.setTcpNoDelay(true);
             upstream.setTcpNoDelay(true);
             applyReadTimeout(upstream, config.idleTimeout());
-            maybeSendProxyProtocolV2(upstream, clientSocket, config);
+            maybeSendProxyProtocolV2(upstream, clientSocket, proxyInfo, config);
             TokenBucketLimiter perConnLimiter = TokenBucketLimiter.create(config.maxRatePerConnBps(), config.burstBytes());
             TokenBucketLimiter currentGlobalLimiter = globalLimiter;
 
@@ -384,23 +385,43 @@ public final class TcpBridgeService {
         return new InetSocketAddress(config.upstreamVelocityHost(), config.upstreamVelocityPort());
     }
 
-    private void maybeSendProxyProtocolV2(Socket upstream, Socket clientSocket, BridgeRuntimeConfig config) throws IOException {
+    private void maybeSendProxyProtocolV2(Socket upstream, Socket clientSocket, ProxyInfo proxyInfo, BridgeRuntimeConfig config) throws IOException {
         if (!config.upstreamProxyProtocol()) {
             return;
         }
-        SocketAddress src = clientSocket.getRemoteSocketAddress();
-        SocketAddress dst = upstream.getRemoteSocketAddress();
-        if (!(src instanceof InetSocketAddress) || !(dst instanceof InetSocketAddress)) {
-            logger.warn("zstdnet-velocity proxy protocol v2 skipped: client/upstream not InetSocketAddress (src={} dst={})", src, dst);
-            return;
-        }
-        InetSocketAddress srcAddr = (InetSocketAddress) src;
-        InetSocketAddress dstAddr = (InetSocketAddress) dst;
-        InetAddress srcInet = srcAddr.getAddress();
-        InetAddress dstInet = dstAddr.getAddress();
-        if (srcInet == null || dstInet == null) {
-            logger.warn("zstdnet-velocity proxy protocol v2 skipped: unresolved addresses src={} dst={}", srcAddr, dstAddr);
-            return;
+        InetAddress srcInet;
+        InetAddress dstInet;
+        int sp;
+        int dp;
+        if (proxyInfo != null && proxyInfo.valid
+                && proxyInfo.sourceIp != null && !proxyInfo.sourceIp.isBlank()
+                && proxyInfo.targetIp != null && !proxyInfo.targetIp.isBlank()) {
+            try {
+                srcInet = InetAddress.getByName(proxyInfo.sourceIp);
+                dstInet = InetAddress.getByName(proxyInfo.targetIp);
+            } catch (UnknownHostException e) {
+                logger.warn("zstdnet-velocity proxy protocol v2 skipped: cannot parse inbound proxy addresses src={} dst={}", proxyInfo.sourceIp, proxyInfo.targetIp);
+                return;
+            }
+            sp = proxyInfo.sourcePort;
+            dp = proxyInfo.targetPort;
+        } else {
+            SocketAddress src = clientSocket.getRemoteSocketAddress();
+            SocketAddress dst = upstream.getRemoteSocketAddress();
+            if (!(src instanceof InetSocketAddress) || !(dst instanceof InetSocketAddress)) {
+                logger.warn("zstdnet-velocity proxy protocol v2 skipped: client/upstream not InetSocketAddress (src={} dst={})", src, dst);
+                return;
+            }
+            InetSocketAddress srcAddr = (InetSocketAddress) src;
+            InetSocketAddress dstAddr = (InetSocketAddress) dst;
+            srcInet = srcAddr.getAddress();
+            dstInet = dstAddr.getAddress();
+            if (srcInet == null || dstInet == null) {
+                logger.warn("zstdnet-velocity proxy protocol v2 skipped: unresolved addresses src={} dst={}", srcAddr, dstAddr);
+                return;
+            }
+            sp = srcAddr.getPort();
+            dp = dstAddr.getPort();
         }
         boolean v6 = srcInet instanceof Inet6Address || dstInet instanceof Inet6Address;
         int addrLen = v6 ? 16 : 4;
@@ -419,8 +440,6 @@ public final class TcpBridgeService {
         off += addrLen;
         System.arraycopy(db, 0, buf, off, addrLen);
         off += addrLen;
-        int sp = srcAddr.getPort();
-        int dp = dstAddr.getPort();
         buf[off++] = (byte) ((sp >> 8) & 0xFF);
         buf[off++] = (byte) (sp & 0xFF);
         buf[off++] = (byte) ((dp >> 8) & 0xFF);
