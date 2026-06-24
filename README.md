@@ -180,9 +180,22 @@ bridge_default_target_server=main_area
 bridge_upstream_velocity_host=127.0.0.1
 bridge_upstream_velocity_port=25565
 
-# 一般保持 false
-# 只有你明确知道自己要用 PROXY protocol 时才打开
-bridge_upstream_proxy_protocol=false
+# 插件 -> Velocity 方向是否发送 PROXY v2 头，可选 auto / true / false
+# auto 会尽力读取 velocity.toml 的 [advanced] haproxy-protocol；读不到时降级为 false 并输出警告
+bridge_upstream_proxy_protocol=auto
+
+# 前置代理 / FRP / LB -> 插件方向是否接受入站 PROXY v2 头，可选 auto / true / false
+# auto 只在 bridge_listen_host 是 localhost / 127.0.0.1 / ::1 等回环地址时启用
+bridge_inbound_proxy_protocol=auto
+
+# 是否把后端 Set Compression 阈值改写为 1048576
+# 默认 false 会保留 Velocity/后端原始阈值，兼容 DAC 等会检查代理端报文形态的反作弊
+bridge_rewrite_compression_threshold=false
+
+# 自定义 UDP 放行/转发规则，多个规则用英文逗号或分号分隔
+# 只写端口表示监听该 UDP 端口并转发到默认后端同端口
+# 完整格式：监听地址:端口->目标地址:端口
+udp_custom_routes=24454, bedrock=0.0.0.0:19132->127.0.0.1:19132
 ```
 
 说明：
@@ -191,6 +204,12 @@ bridge_upstream_proxy_protocol=false
 - `25565` 是 Velocity 自己原本的 Minecraft 入口。
 - 插件现在固定走多子服代理模式，不再提供直连单后端模式。
 - `/server`、fallback、try 列表、forced-hosts 等都继续用 Velocity 原生配置。
+- `bridge_upstream_proxy_protocol` 是“插件到 Velocity”的方向；设为 `true` 时，Velocity 的 `velocity.toml` 也必须开启 `[advanced] haproxy-protocol = true`。
+- `bridge_inbound_proxy_protocol` 是“前置代理到插件”的方向；公网监听 `0.0.0.0` 时不要直接信任客户端自带的 PROXY v2，只有确认桥接端口只被可信 FRP/LB 访问时才显式设为 `true`。
+- 入站 PROXY v2 只用于恢复玩家真实来源 IP；插件发给 Velocity 的 PROXY v2 目标地址始终是实际配置的 Velocity upstream，不透传前置代理传入的 target。
+- `bridge_rewrite_compression_threshold=false` 会保留 Velocity / 后端原始 vanilla compression 阈值，避免把 `256 -> 1048576` 这类阈值改写暴露给代理端反作弊；只有确认插件链路兼容且更看重压缩效率时才设为 `true`。
+- `udp_custom_routes=24454` 会监听 `bridge_listen_host:24454` 并转发到默认后端的 `24454/udp`；也可以写成 `label=0.0.0.0:19132->127.0.0.1:19132` 指定日志名和目标。
+- 安装 1.4.2 或更新版本 ZstdNet 客户端 mod 的玩家会收到 Velocity 侧服务端 HUD 统计；插件会向 `zstdnet:server_hud` 以及 Forge 1.20.1 的 `zstdnet:lan_compression` 兼容通道发送快照。
 
 ---
 

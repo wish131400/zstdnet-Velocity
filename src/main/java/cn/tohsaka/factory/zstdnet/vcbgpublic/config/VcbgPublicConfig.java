@@ -10,10 +10,13 @@ public record VcbgPublicConfig(
         String bridgeDefaultTargetServer,
         String bridgeUpstreamVelocityHost,
         int bridgeUpstreamVelocityPort,
-        boolean bridgeUpstreamProxyProtocol,
+        ProxyProtocolMode bridgeUpstreamProxyProtocol,
+        ProxyProtocolMode bridgeInboundProxyProtocol,
+        boolean bridgeRewriteCompressionThreshold,
         boolean voiceChatPassthrough,
         String voiceChatListen,
         String voiceChatTarget,
+        String udpCustomRoutes,
         int maxConnPerIp,
         int maxReqPerWindow,
         Duration window,
@@ -30,8 +33,11 @@ public record VcbgPublicConfig(
         Objects.requireNonNull(bridgeListenHost, "bridgeListenHost");
         Objects.requireNonNull(bridgeDefaultTargetServer, "bridgeDefaultTargetServer");
         Objects.requireNonNull(bridgeUpstreamVelocityHost, "bridgeUpstreamVelocityHost");
+        Objects.requireNonNull(bridgeUpstreamProxyProtocol, "bridgeUpstreamProxyProtocol");
+        Objects.requireNonNull(bridgeInboundProxyProtocol, "bridgeInboundProxyProtocol");
         Objects.requireNonNull(voiceChatListen, "voiceChatListen");
         Objects.requireNonNull(voiceChatTarget, "voiceChatTarget");
+        Objects.requireNonNull(udpCustomRoutes, "udpCustomRoutes");
         Objects.requireNonNull(window, "window");
         Objects.requireNonNull(banDuration, "banDuration");
         Objects.requireNonNull(statsInterval, "statsInterval");
@@ -71,15 +77,18 @@ public record VcbgPublicConfig(
                 "",
                 "127.0.0.1",
                 25565,
+                ProxyProtocolMode.AUTO,
+                ProxyProtocolMode.AUTO,
                 false,
                 true,
+                "",
                 "",
                 "",
                 9999,
                 50,
                 Duration.ofSeconds(10),
                 Duration.ofMinutes(1),
-                Duration.ofSeconds(10),
+                Duration.ZERO,
                 9,
                 Duration.ofMillis(2),
                 Duration.ZERO,

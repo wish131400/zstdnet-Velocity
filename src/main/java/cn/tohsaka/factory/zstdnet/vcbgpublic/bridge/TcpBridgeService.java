@@ -27,6 +27,7 @@ import java.net.ServerSocket;
 import java.net.SocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalTime;
@@ -57,6 +58,7 @@ public final class TcpBridgeService {
     private static final String ZSTD_ADDRESS_HINT = "当前服务器启用了 ZSTD 连接，请联系服务器管理员获取正确的连接方式。";
     private static final int BRIDGE_COMPRESSION_THRESHOLD = 1048576;
     private static final int LOGIN_SET_COMPRESSION_PACKET_ID = 0x03;
+    private static final int MAX_PROXY_V2_PAYLOAD_SIZE = 4096;
     private static final byte[] PROXY_V2_SIGNATURE = new byte[]{
             0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a
     };
@@ -79,8 +81,12 @@ public final class TcpBridgeService {
         this.targetResolver = targetResolver;
     }
 
-    public synchronized void start(VcbgPublicConfig config) throws IOException {
-        BridgeRuntimeConfig runtimeConfig = BridgeRuntimeConfig.from(config);
+    public synchronized void start(
+            VcbgPublicConfig config,
+            boolean upstreamProxyProtocol,
+            boolean inboundProxyProtocol
+    ) throws IOException {
+        BridgeRuntimeConfig runtimeConfig = BridgeRuntimeConfig.from(config, upstreamProxyProtocol, inboundProxyProtocol);
         if (running) {
             return;
         }
@@ -122,6 +128,14 @@ public final class TcpBridgeService {
         thread.start();
         startStatsPrinter(runtimeConfig);
 
+        logger.info(
+                "zstdnet-velocity proxy protocol active: upstream={} (mode={}) inbound={} (mode={}); compression_threshold_rewrite={}",
+                runtimeConfig.upstreamProxyProtocol(),
+                config.bridgeUpstreamProxyProtocol(),
+                runtimeConfig.inboundProxyProtocol(),
+                config.bridgeInboundProxyProtocol(),
+                runtimeConfig.rewriteCompressionThreshold()
+        );
         logger.info(
                 "zstdnet-velocity tcp bridge listening on {}:{} -> velocity({}:{}); default UDP target={}({}:{})",
                 runtimeConfig.listenHost(),
@@ -171,6 +185,10 @@ public final class TcpBridgeService {
         return running;
     }
 
+    public TrafficStats stats() {
+        return stats;
+    }
+
     private void startUdpForwarders(VcbgPublicConfig config, BridgeRuntimeConfig runtimeConfig, BridgeTarget target) {
         List<UdpRoute> routes = buildUdpRoutes(config, runtimeConfig, target);
         List<UdpForwarder> started = new ArrayList<>();
@@ -205,19 +223,132 @@ public final class TcpBridgeService {
         );
         if (voiceChat.reuseGameRoute()) {
             logger.info("zstdnet-velocity voice chat UDP passthrough reuses the built-in game UDP route.");
-            return routes;
-        }
-        if (voiceChat.route() != null) {
+        } else if (voiceChat.route() != null) {
             routes.add(voiceChat.route());
-            return routes;
-        }
-
-        if (config.voiceChatPassthrough()) {
+        } else if (config.voiceChatPassthrough()) {
             logger.warn("zstdnet-velocity voice chat UDP passthrough not armed: {}", voiceChat.reason());
         } else {
             logger.info("zstdnet-velocity voice chat UDP passthrough disabled.");
         }
+        routes.addAll(buildCustomUdpRoutes(config.udpCustomRoutes(), gameListen, gameTarget));
         return routes;
+    }
+
+    private List<UdpRoute> buildCustomUdpRoutes(String rawRoutes, HostPort gameListen, HostPort gameTarget) {
+        List<UdpRoute> routes = new ArrayList<>();
+        if (rawRoutes == null || rawRoutes.isBlank()) {
+            return routes;
+        }
+        String[] entries = rawRoutes.split("[,;\\r\\n]+");
+        int index = 1;
+        for (String rawEntry : entries) {
+            String entry = rawEntry.trim();
+            if (entry.isEmpty()) {
+                continue;
+            }
+            String label = "custom_udp_" + index;
+            String spec = entry;
+            int arrow = entry.indexOf("->");
+            int labelSeparator = entry.indexOf('=');
+            if (labelSeparator > 0 && (arrow < 0 || labelSeparator < arrow)) {
+                label = sanitizeUdpRouteLabel(entry.substring(0, labelSeparator), label);
+                spec = entry.substring(labelSeparator + 1).trim();
+            }
+            try {
+                UdpRoute route = parseCustomUdpRoute(label, spec, gameListen, gameTarget);
+                routes.add(route);
+                logger.info("zstdnet-velocity custom UDP route armed [{}]: {} -> {}", route.label(), route.listen(), route.target());
+                index++;
+            } catch (IllegalArgumentException e) {
+                logger.warn("zstdnet-velocity custom UDP route skipped [{}]: {}", entry, e.getMessage());
+            }
+        }
+        return routes;
+    }
+
+    private UdpRoute parseCustomUdpRoute(String label, String spec, HostPort gameListen, HostPort gameTarget) {
+        if (spec == null || spec.isBlank()) {
+            throw new IllegalArgumentException("empty route");
+        }
+        int arrow = spec.indexOf("->");
+        if (arrow < 0) {
+            HostPort listen = parseCustomUdpEndpoint(spec, gameListen.host(), gameListen.port());
+            HostPort target = new HostPort(gameTarget.host(), listen.port());
+            return new UdpRoute(label, listen, target);
+        }
+        String listenSpec = spec.substring(0, arrow).trim();
+        String targetSpec = spec.substring(arrow + 2).trim();
+        HostPort listen = parseCustomUdpEndpoint(listenSpec, gameListen.host(), gameListen.port());
+        HostPort target = parseCustomUdpEndpoint(targetSpec, gameTarget.host(), listen.port());
+        return new UdpRoute(label, listen, target);
+    }
+
+    private HostPort parseCustomUdpEndpoint(String raw, String defaultHost, int defaultPort) {
+        if (raw == null || raw.isBlank()) {
+            throw new IllegalArgumentException("empty endpoint");
+        }
+        String value = raw.trim();
+        if (isPortOnly(value)) {
+            return new HostPort(defaultHost, parseUdpPort(value));
+        }
+        if (value.startsWith(":") && value.length() > 1) {
+            return new HostPort(defaultHost, parseUdpPort(value.substring(1)));
+        }
+        if (value.startsWith("[") && value.contains("]")) {
+            int end = value.indexOf(']');
+            String host = value.substring(1, end).trim();
+            int port = defaultPort;
+            if (end + 1 < value.length()) {
+                if (value.charAt(end + 1) != ':') {
+                    throw new IllegalArgumentException("invalid bracketed endpoint: " + value);
+                }
+                port = parseUdpPort(value.substring(end + 2));
+            }
+            return new HostPort(host, port);
+        }
+        int firstColon = value.indexOf(':');
+        int lastColon = value.lastIndexOf(':');
+        if (firstColon > 0 && firstColon == lastColon) {
+            String host = value.substring(0, firstColon).trim();
+            int port = parseUdpPort(value.substring(firstColon + 1));
+            return new HostPort(host, port);
+        }
+        if (firstColon >= 0) {
+            return new HostPort(value, defaultPort);
+        }
+        return new HostPort(value, defaultPort);
+    }
+
+    private boolean isPortOnly(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            if (!Character.isDigit(value.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private int parseUdpPort(String raw) {
+        try {
+            int port = Integer.parseInt(raw.trim());
+            if (port < 1 || port > 65535) {
+                throw new IllegalArgumentException("port out of range: " + port);
+            }
+            return port;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("invalid port: " + raw);
+        }
+    }
+
+    private String sanitizeUdpRouteLabel(String raw, String fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        String label = raw.trim().replaceAll("[^A-Za-z0-9_.-]", "_");
+        return label.isBlank() ? fallback : label;
     }
 
     private void stopUdpForwarders() {
@@ -266,9 +397,9 @@ public final class TcpBridgeService {
         try (Socket clientSocket = client; Socket upstream = new Socket()) {
             stats.addConn(1);
             PushbackInputStream pushIn = new PushbackInputStream(clientSocket.getInputStream(), CLIENT_PEEK_BUFFER);
-            ProxyInfo proxyInfo = parseProxyProtocolV2(pushIn);
-            if (proxyInfo.valid && proxyInfo.sourceIp != null && !proxyInfo.sourceIp.isBlank()) {
-                sourceIp = proxyInfo.sourceIp;
+            ProxyInfo proxyInfo = config.inboundProxyProtocol() ? parseProxyProtocolV2(pushIn) : ProxyInfo.invalid();
+            if (proxyInfo.valid() && proxyInfo.sourceIp() != null && !proxyInfo.sourceIp().isBlank()) {
+                sourceIp = proxyInfo.sourceIp();
             }
             FloodGuard currentGuard = guard;
             if (currentGuard != null && !currentGuard.begin(sourceIp)) {
@@ -286,7 +417,7 @@ public final class TcpBridgeService {
             clientSocket.setTcpNoDelay(true);
             upstream.setTcpNoDelay(true);
             applyReadTimeout(upstream, config.idleTimeout());
-            maybeSendProxyProtocolV2(upstream, clientSocket, config);
+            maybeSendProxyProtocolV2(upstream, clientSocket, config, proxyInfo);
             TokenBucketLimiter perConnLimiter = TokenBucketLimiter.create(config.maxRatePerConnBps(), config.burstBytes());
             TokenBucketLimiter currentGlobalLimiter = globalLimiter;
 
@@ -306,7 +437,7 @@ public final class TcpBridgeService {
                 return;
             }
 
-            VanillaCompressionBridge compressionBridge = new VanillaCompressionBridge();
+            VanillaCompressionBridge compressionBridge = new VanillaCompressionBridge(config.rewriteCompressionThreshold());
 
             Future<Exception> c2s = workers.submit(() -> {
                 try {
@@ -384,22 +515,22 @@ public final class TcpBridgeService {
         return new InetSocketAddress(config.upstreamVelocityHost(), config.upstreamVelocityPort());
     }
 
-    private void maybeSendProxyProtocolV2(Socket upstream, Socket clientSocket, BridgeRuntimeConfig config) throws IOException {
+    private void maybeSendProxyProtocolV2(Socket upstream, Socket clientSocket, BridgeRuntimeConfig config, ProxyInfo proxyInfo) throws IOException {
         if (!config.upstreamProxyProtocol()) {
             return;
         }
-        SocketAddress src = clientSocket.getRemoteSocketAddress();
+        // Only propagate the trusted client identity from inbound PROXY v2; the destination stays the actual Velocity upstream socket.
         SocketAddress dst = upstream.getRemoteSocketAddress();
-        if (!(src instanceof InetSocketAddress) || !(dst instanceof InetSocketAddress)) {
-            logger.warn("zstdnet-velocity proxy protocol v2 skipped: client/upstream not InetSocketAddress (src={} dst={})", src, dst);
+        SourceAddress srcAddr = resolveProxySourceAddress(clientSocket, proxyInfo);
+        if (srcAddr == null || !(dst instanceof InetSocketAddress)) {
+            logger.warn("zstdnet-velocity proxy protocol v2 skipped: client/upstream not InetSocketAddress (src={} dst={})", clientSocket.getRemoteSocketAddress(), dst);
             return;
         }
-        InetSocketAddress srcAddr = (InetSocketAddress) src;
         InetSocketAddress dstAddr = (InetSocketAddress) dst;
-        InetAddress srcInet = srcAddr.getAddress();
+        InetAddress srcInet = srcAddr.address();
         InetAddress dstInet = dstAddr.getAddress();
         if (srcInet == null || dstInet == null) {
-            logger.warn("zstdnet-velocity proxy protocol v2 skipped: unresolved addresses src={} dst={}", srcAddr, dstAddr);
+            logger.warn("zstdnet-velocity proxy protocol v2 skipped: unresolved addresses src={} dst={}", srcInet, dstAddr);
             return;
         }
         boolean v6 = srcInet instanceof Inet6Address || dstInet instanceof Inet6Address;
@@ -419,7 +550,7 @@ public final class TcpBridgeService {
         off += addrLen;
         System.arraycopy(db, 0, buf, off, addrLen);
         off += addrLen;
-        int sp = srcAddr.getPort();
+        int sp = srcAddr.port();
         int dp = dstAddr.getPort();
         buf[off++] = (byte) ((sp >> 8) & 0xFF);
         buf[off++] = (byte) (sp & 0xFF);
@@ -428,6 +559,23 @@ public final class TcpBridgeService {
         OutputStream out = upstream.getOutputStream();
         out.write(buf);
         out.flush();
+    }
+
+    private SourceAddress resolveProxySourceAddress(Socket clientSocket, ProxyInfo proxyInfo) {
+        if (proxyInfo.valid() && proxyInfo.sourceIp() != null && !proxyInfo.sourceIp().isBlank()) {
+            try {
+                return new SourceAddress(InetAddress.getByName(proxyInfo.sourceIp()), proxyInfo.sourcePort());
+            } catch (UnknownHostException e) {
+                logger.warn("zstdnet-velocity proxy protocol v2 skipped inbound source address {}: {}", proxyInfo.sourceIp(), e.toString());
+                return null;
+            }
+        }
+        SocketAddress source = clientSocket.getRemoteSocketAddress();
+        if (!(source instanceof InetSocketAddress sourceAddress)) {
+            return null;
+        }
+        InetAddress sourceInet = sourceAddress.getAddress();
+        return sourceInet == null ? null : new SourceAddress(sourceInet, sourceAddress.getPort());
     }
 
     private static byte[] normalizeAddressBytes(InetAddress addr, int target) {
@@ -467,6 +615,9 @@ public final class TcpBridgeService {
         int verCmd = fixed[0] & 0xFF;
         int famProto = fixed[1] & 0xFF;
         int payloadLen = ((fixed[2] & 0xFF) << 8) | (fixed[3] & 0xFF);
+        if (payloadLen > MAX_PROXY_V2_PAYLOAD_SIZE) {
+            throw new IOException("PROXY v2 payload too large: " + payloadLen);
+        }
         byte[] payload = PacketIo.readFully(in, payloadLen);
 
         int version = (verCmd & 0xF0) >> 4;
@@ -546,11 +697,11 @@ public final class TcpBridgeService {
         OutputStream upstreamOut = upstream.getOutputStream();
         upstreamOut.write(initialWireData);
         upstreamOut.flush();
-        addRawPassthroughStats(initialWireData.length, stats);
+        addRawPassthroughStats(initialWireData.length, stats, true);
 
         Future<?> upstreamWriter = workers.submit(() -> {
             try {
-                streamRaw(clientIn, upstreamOut, stats);
+                streamRaw(clientIn, upstreamOut, stats, true);
             } catch (Exception ignored) {
             } finally {
                 closeWrite(upstream);
@@ -559,7 +710,7 @@ public final class TcpBridgeService {
 
         Future<?> downstreamWriter = workers.submit(() -> {
             try {
-                streamRaw(upstream.getInputStream(), clientSocket.getOutputStream(), stats);
+                streamRaw(upstream.getInputStream(), clientSocket.getOutputStream(), stats, false);
             } catch (Exception ignored) {
             } finally {
                 closeWrite(clientSocket);
@@ -571,7 +722,7 @@ public final class TcpBridgeService {
     }
 
     private void forwardDecompress(Socket dst, InputStream src, TrafficStats stats, VanillaCompressionBridge compressionBridge) throws IOException {
-        try (ZstdInputStream zstdIn = new ZstdInputStream(new CountingInputStream(src, stats::addZstd))) {
+        try (ZstdInputStream zstdIn = new ZstdInputStream(new CountingInputStream(src, stats::addZstdUp))) {
             OutputStream dstOut = dst.getOutputStream();
             while (true) {
                 byte[] payload = readNextPacketPayload(zstdIn);
@@ -580,14 +731,14 @@ public final class TcpBridgeService {
                 }
                 byte[] translated = compressionBridge.translateClientToBackend(payload);
                 PacketIo.writePacket(dstOut, translated);
-                stats.addRaw(packetWireLength(translated));
+                stats.addRawUp(packetWireLength(translated));
             }
         }
     }
 
     private void forwardCompress(OutputStream dst, Socket src, int level, Duration flushInterval, TrafficStats stats, TokenBucketLimiter perConnLimiter, TokenBucketLimiter globalLimiter, VanillaCompressionBridge compressionBridge) throws IOException {
         OutputStream limitedDst = new RateLimitedOutputStream(dst, perConnLimiter, globalLimiter);
-        try (ZstdOutputStream zstdOut = new ZstdOutputStream(new CountingOutputStream(limitedDst, stats::addZstd), level)) {
+        try (ZstdOutputStream zstdOut = new ZstdOutputStream(new CountingOutputStream(limitedDst, stats::addZstdDown), level)) {
             zstdOut.setCloseFrameOnFlush(false);
             InputStream srcIn = src.getInputStream();
             final long flushIntervalNs = Math.max(0L, flushInterval.toNanos());
@@ -621,7 +772,7 @@ public final class TcpBridgeService {
                             break;
                         }
                         byte[] translated = compressionBridge.translateBackendToClient(payload);
-                        stats.addRaw(packetWireLength(translated));
+                        stats.addRawDown(packetWireLength(translated));
                         PacketIo.writePacket(zstdOut, translated);
                         hasPending = true;
                         if (flushIntervalNs == 0L || (System.nanoTime() - lastFlushNs) >= flushIntervalNs) {
@@ -646,23 +797,28 @@ public final class TcpBridgeService {
         }
     }
 
-    private void streamRaw(InputStream in, OutputStream out, TrafficStats stats) throws IOException {
+    private void streamRaw(InputStream in, OutputStream out, TrafficStats stats, boolean upstream) throws IOException {
         byte[] buf = new byte[16 * 1024];
         int n;
         while ((n = in.read(buf)) >= 0) {
             if (n > 0) {
                 out.write(buf, 0, n);
-                addRawPassthroughStats(n, stats);
+                addRawPassthroughStats(n, stats, upstream);
             }
         }
     }
 
-    private void addRawPassthroughStats(int bytes, TrafficStats stats) {
+    private void addRawPassthroughStats(int bytes, TrafficStats stats, boolean upstream) {
         if (stats == null || bytes <= 0) {
             return;
         }
-        stats.addRaw(bytes);
-        stats.addZstd(bytes);
+        if (upstream) {
+            stats.addRawUp(bytes);
+            stats.addZstdUp(bytes);
+        } else {
+            stats.addRawDown(bytes);
+            stats.addZstdDown(bytes);
+        }
     }
 
     private byte[] readNextPacketPayload(InputStream in) throws IOException {
@@ -837,18 +993,31 @@ public final class TcpBridgeService {
     }
 
     private final class VanillaCompressionBridge {
+        private final boolean rewriteCompressionThreshold;
         private volatile int backendThreshold = -1;
         private volatile int clientThreshold = -1;
+
+        private VanillaCompressionBridge(boolean rewriteCompressionThreshold) {
+            this.rewriteCompressionThreshold = rewriteCompressionThreshold;
+        }
 
         byte[] translateBackendToClient(byte[] payload) throws IOException {
             if (backendThreshold < 0) {
                 Integer threshold = tryParseSetCompressionThreshold(payload);
                 if (threshold != null) {
                     backendThreshold = threshold;
+                    if (!rewriteCompressionThreshold) {
+                        clientThreshold = threshold;
+                        logger.info("zstdnet-velocity preserved backend compression threshold {} for proxy-plugin compatibility.", backendThreshold);
+                        return payload;
+                    }
                     clientThreshold = Math.max(threshold, BRIDGE_COMPRESSION_THRESHOLD);
                     logger.info("zstdnet-velocity rewrote backend compression threshold {} -> {} for bridge-side Zstd efficiency.", backendThreshold, clientThreshold);
                     return buildSetCompressionPayload(clientThreshold);
                 }
+                return payload;
+            }
+            if (!rewriteCompressionThreshold) {
                 return payload;
             }
 
@@ -866,7 +1035,7 @@ public final class TcpBridgeService {
         }
 
         byte[] translateClientToBackend(byte[] payload) throws IOException {
-            if (backendThreshold < 0) {
+            if (backendThreshold < 0 || !rewriteCompressionThreshold) {
                 return payload;
             }
 
@@ -967,32 +1136,60 @@ public final class TcpBridgeService {
         if (ticker == null) {
             return;
         }
-        long periodMs = Math.max(250L, config.statsInterval().toMillis());
-        AtomicLong prevRaw = new AtomicLong();
-        AtomicLong prevZstd = new AtomicLong();
-        ticker.scheduleAtFixedRate(() -> {
+        Runnable sweepGuard = () -> {
             FloodGuard currentGuard = guard;
             if (currentGuard != null) {
                 currentGuard.sweepExpired();
             }
+        };
+        if (config.statsInterval().isZero() || config.statsInterval().isNegative()) {
+            ticker.scheduleAtFixedRate(sweepGuard, 1L, 1L, TimeUnit.SECONDS);
+            logger.info("zstdnet-velocity periodic traffic stats disabled by stats_interval={}", config.statsInterval());
+            return;
+        }
+        long periodMs = Math.max(250L, config.statsInterval().toMillis());
+        AtomicLong prevRaw = new AtomicLong();
+        AtomicLong prevZstd = new AtomicLong();
+        AtomicLong prevRawUp = new AtomicLong();
+        AtomicLong prevRawDown = new AtomicLong();
+        AtomicLong prevZstdUp = new AtomicLong();
+        AtomicLong prevZstdDown = new AtomicLong();
+        ticker.scheduleAtFixedRate(() -> {
+            sweepGuard.run();
 
             long raw = stats.rawBytes.get();
             long zstd = stats.zstdBytes.get();
+            long rawUp = stats.rawUpBytes.get();
+            long rawDown = stats.rawDownBytes.get();
+            long zstdUp = stats.zstdUpBytes.get();
+            long zstdDown = stats.zstdDownBytes.get();
             int conns = stats.activeConn.get();
 
             long dr = raw - prevRaw.getAndSet(raw);
             long dz = zstd - prevZstd.getAndSet(zstd);
+            long dru = rawUp - prevRawUp.getAndSet(rawUp);
+            long drd = rawDown - prevRawDown.getAndSet(rawDown);
+            long dzu = zstdUp - prevZstdUp.getAndSet(zstdUp);
+            long dzd = zstdDown - prevZstdDown.getAndSet(zstdDown);
             long rawPerSec = (long) (dr * (1000.0 / periodMs));
             long zstdPerSec = (long) (dz * (1000.0 / periodMs));
+            long rawUpPerSec = (long) (dru * (1000.0 / periodMs));
+            long rawDownPerSec = (long) (drd * (1000.0 / periodMs));
+            long zstdUpPerSec = (long) (dzu * (1000.0 / periodMs));
+            long zstdDownPerSec = (long) (dzd * (1000.0 / periodMs));
             double ratio = raw <= 0 ? 0.0 : ((double) zstd * 100.0 / (double) raw);
 
             String now = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
-            logger.info("[{}] Raw: {} ({}) | Zstd: {} ({}) | Ratio: {}% | Conns: {}",
+            logger.info("[{}] Raw: {} ({}, up {}, down {}) | Zstd: {} ({}, up {}, down {}) | Ratio: {}% | Conns: {}",
                     now,
                     formatSize(raw),
                     formatRate(rawPerSec),
+                    formatRate(rawUpPerSec),
+                    formatRate(rawDownPerSec),
                     formatSize(zstd),
                     formatRate(zstdPerSec),
+                    formatRate(zstdUpPerSec),
+                    formatRate(zstdDownPerSec),
                     String.format(Locale.ROOT, "%.2f", ratio),
                     conns);
         }, periodMs, periodMs, TimeUnit.MILLISECONDS);
@@ -1101,6 +1298,9 @@ public final class TcpBridgeService {
         private static ProxyInfo invalid() {
             return new ProxyInfo(false, null, 0, null, 0);
         }
+    }
+
+    private record SourceAddress(InetAddress address, int port) {
     }
 
     private enum ClientMode {

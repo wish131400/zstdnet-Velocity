@@ -11,6 +11,8 @@ record BridgeRuntimeConfig(
         String upstreamVelocityHost,
         int upstreamVelocityPort,
         boolean upstreamProxyProtocol,
+        boolean inboundProxyProtocol,
+        boolean rewriteCompressionThreshold,
         int maxConnPerIp,
         int maxReqPerWindow,
         Duration window,
@@ -33,13 +35,19 @@ record BridgeRuntimeConfig(
         Objects.requireNonNull(idleTimeout, "idleTimeout");
     }
 
-    static BridgeRuntimeConfig from(VcbgPublicConfig config) {
+    static BridgeRuntimeConfig from(
+            VcbgPublicConfig config,
+            boolean upstreamProxyProtocol,
+            boolean inboundProxyProtocol
+    ) {
         return new BridgeRuntimeConfig(
                 config.bridgeListenHost(),
                 config.bridgeListenPort(),
                 config.bridgeUpstreamVelocityHost(),
                 config.bridgeUpstreamVelocityPort(),
-                config.bridgeUpstreamProxyProtocol(),
+                upstreamProxyProtocol,
+                inboundProxyProtocol,
+                config.bridgeRewriteCompressionThreshold(),
                 config.maxConnPerIp(),
                 config.maxReqPerWindow(),
                 config.window(),

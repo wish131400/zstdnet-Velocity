@@ -34,17 +34,26 @@ public final class VcbgPublicConfigLoader {
                 properties.getProperty("bridge_upstream_velocity_port"),
                 25565
         );
-        boolean bridgeUpstreamProxyProtocol = Boolean.parseBoolean(
-                properties.getProperty("bridge_upstream_proxy_protocol", "false").trim()
+        ProxyProtocolMode bridgeUpstreamProxyProtocol = ProxyProtocolMode.parse(
+                properties.getProperty("bridge_upstream_proxy_protocol"),
+                ProxyProtocolMode.AUTO
+        );
+        ProxyProtocolMode bridgeInboundProxyProtocol = ProxyProtocolMode.parse(
+                properties.getProperty("bridge_inbound_proxy_protocol"),
+                ProxyProtocolMode.AUTO
+        );
+        boolean bridgeRewriteCompressionThreshold = Boolean.parseBoolean(
+                properties.getProperty("bridge_rewrite_compression_threshold", "false").trim()
         );
         boolean voiceChatPassthrough = Boolean.parseBoolean(properties.getProperty("voice_chat_passthrough", "true").trim());
         String voiceChatListen = properties.getProperty("voice_chat_listen", "").trim();
         String voiceChatTarget = properties.getProperty("voice_chat_target", "").trim();
+        String udpCustomRoutes = properties.getProperty("udp_custom_routes", "").trim();
         int maxConnPerIp = Math.max(0, parseInt(properties.getProperty("max_conn_per_ip"), 9999));
         int maxReqPerWindow = Math.max(0, parseInt(properties.getProperty("max_req_per_window"), 50));
         Duration window = parseDuration(properties.getProperty("request_window"), Duration.ofSeconds(10));
         Duration banDuration = parseDuration(properties.getProperty("ban_duration"), Duration.ofMinutes(1));
-        Duration statsInterval = parseDuration(properties.getProperty("stats_interval"), Duration.ofSeconds(10));
+        Duration statsInterval = parseDuration(properties.getProperty("stats_interval"), Duration.ZERO);
         int level = clamp(parseInt(properties.getProperty("level"), 9), 1, 22);
         Duration flushInterval = parseDuration(properties.getProperty("flush_interval"), Duration.ofMillis(2));
         Duration idleTimeout = parseDuration(properties.getProperty("idle_timeout"), Duration.ZERO);
@@ -53,7 +62,7 @@ public final class VcbgPublicConfigLoader {
         int burstBytes = parsePositiveInt(properties.getProperty("burst_bytes"), 262144);
 
         logger.info(
-                "zstdnet-velocity config loaded: bridge_enabled={} bridge_listen={}:{} bridge_default_target_server={} bridge_upstream_velocity={}:{} bridge_upstream_proxy_protocol={} voice_chat_passthrough={} voice_chat_listen={} voice_chat_target={} max_conn_per_ip={} max_req_per_window={} request_window={} ban_duration={} stats_interval={} level={} flush_interval={} idle_timeout={} rate_per_conn={} rate_global={} burst_bytes={}",
+                "zstdnet-velocity config loaded: bridge_enabled={} bridge_listen={}:{} bridge_default_target_server={} bridge_upstream_velocity={}:{} bridge_upstream_proxy_protocol={} bridge_inbound_proxy_protocol={} bridge_rewrite_compression_threshold={} voice_chat_passthrough={} voice_chat_listen={} voice_chat_target={} udp_custom_routes={} max_conn_per_ip={} max_req_per_window={} request_window={} ban_duration={} stats_interval={} level={} flush_interval={} idle_timeout={} rate_per_conn={} rate_global={} burst_bytes={}",
                 bridgeEnabled,
                 printable(bridgeListenHost),
                 bridgeListenPort,
@@ -61,9 +70,12 @@ public final class VcbgPublicConfigLoader {
                 printable(bridgeUpstreamVelocityHost),
                 bridgeUpstreamVelocityPort,
                 bridgeUpstreamProxyProtocol,
+                bridgeInboundProxyProtocol,
+                bridgeRewriteCompressionThreshold,
                 voiceChatPassthrough,
                 printable(voiceChatListen),
                 printable(voiceChatTarget),
+                printable(udpCustomRoutes),
                 maxConnPerIp,
                 maxReqPerWindow,
                 window,
@@ -85,9 +97,12 @@ public final class VcbgPublicConfigLoader {
                 blankAsDefault(bridgeUpstreamVelocityHost, "127.0.0.1"),
                 bridgeUpstreamVelocityPort,
                 bridgeUpstreamProxyProtocol,
+                bridgeInboundProxyProtocol,
+                bridgeRewriteCompressionThreshold,
                 voiceChatPassthrough,
                 voiceChatListen,
                 voiceChatTarget,
+                udpCustomRoutes,
                 maxConnPerIp,
                 maxReqPerWindow,
                 window,
@@ -142,12 +157,24 @@ public final class VcbgPublicConfigLoader {
                 # 即 velocity.toml 的 bind 端口（默认 25577，许多服主会改成 25565）。
                 bridge_upstream_velocity_port=25565
 
-                # 是否在上游连接前发送 PROXY v2 头以保留客户端真实 IP。
-                # 启用此项需要同时把 velocity.toml 中 advanced.haproxy-protocol 设置为 true。
-                # 注意：开启 velocity 端的 haproxy-protocol 后，所有连接到 Velocity 的入口都必须带 PROXY 头，
-                # 因此在公网开放该端口前需要先用防火墙限制为仅本机/仅本插件来源。
-                # 默认 false：保留 Velocity 默认行为，桥接玩家在 Velocity 端日志中显示为 127.0.0.1。
-                bridge_upstream_proxy_protocol=false
+                # 插件 -> Velocity 方向是否发送 PROXY v2 头以保留客户端真实 IP。
+                # 可选值：auto / true / false。
+                # auto：尽力读取 velocity.toml 的 advanced.haproxy-protocol；读不到时降级为 false 并输出警告。
+                # true：强制发送，必须同时把 Velocity 的 advanced.haproxy-protocol 设置为 true。
+                # false：不发送，桥接玩家在 Velocity 端日志中通常显示为 127.0.0.1。
+                bridge_upstream_proxy_protocol=auto
+
+                # 前置代理 / FRP / LB -> 插件方向是否接受入站 PROXY v2 头。
+                # 可选值：auto / true / false。
+                # auto：仅当 bridge_listen_host 是 localhost / 127.0.0.1 / ::1 等回环地址时接受。
+                # true：强制接受，只有确认能连到桥接端口的来源都是可信前置代理时才使用。
+                # false：不解析入站 PROXY v2，避免公网客户端伪造真实 IP。
+                bridge_inbound_proxy_protocol=auto
+
+                # 是否把后端 Set Compression 阈值改写为 1048576。
+                # false：保留 Velocity/后端原始阈值，兼容 DAC 等会检查代理端报文形态的反作弊。
+                # true：恢复旧版桥接侧重压缩优化，但可能不兼容部分代理端插件。
+                bridge_rewrite_compression_threshold=false
 
                 # 是否启用语音/同端口 UDP 原样透传。
                 # true：尝试启动 UDP 转发，兼容 Sable/机械动力：航空学同端口 UDP，以及可选的 Simple Voice Chat UDP。
@@ -161,6 +188,12 @@ public final class VcbgPublicConfigLoader {
                 # 语音 UDP 目标地址。
                 # 留空时不会启动独立语音 UDP 转发；如后端语音端口是 24454，可填 127.0.0.1:24454。
                 voice_chat_target=
+
+                # 自定义 UDP 放行/转发规则，多个规则用英文逗号或分号分隔。
+                # 只写端口：在 bridge_listen_host 上监听该 UDP 端口，并转发到默认后端同端口。
+                # 完整格式：监听地址:端口->目标地址:端口；可选 label= 前缀用于日志。
+                # 示例：udp_custom_routes=24454, map=0.0.0.0:19132->127.0.0.1:19132
+                udp_custom_routes=
 
                 # 单个来源 IP 同时允许的最大连接数。
                 # 设置为 0 表示不限制；默认值较大，主要用于防止异常连接刷爆代理。
@@ -178,7 +211,7 @@ public final class VcbgPublicConfigLoader {
 
                 # 运行时统计日志输出间隔。
                 # 0 表示关闭周期统计日志。
-                stats_interval=10s
+                stats_interval=0s
 
                 # Zstd 压缩等级，范围 1 到 22。
                 # 数值越高压缩率通常越高，但 CPU 消耗也越高；推荐 3 到 9。
