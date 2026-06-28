@@ -38,6 +38,7 @@ public final class ZstdNetHudBroadcaster {
 
     private volatile VcbgPublicConfig config;
     private volatile ScheduledTask task;
+    private volatile boolean channelsRegistered;
 
     public ZstdNetHudBroadcaster(ProxyServer proxyServer, Object plugin, Logger logger, TrafficStats stats) {
         this.proxyServer = proxyServer;
@@ -49,6 +50,7 @@ public final class ZstdNetHudBroadcaster {
     public synchronized void start(VcbgPublicConfig config) {
         this.config = config;
         proxyServer.getChannelRegistrar().register(FORGE_1201_CHANNEL, SERVER_HUD_CHANNEL);
+        channelsRegistered = true;
         task = proxyServer.getScheduler()
                 .buildTask(plugin, this::broadcast)
                 .delay(Duration.ofSeconds(1))
@@ -63,7 +65,10 @@ public final class ZstdNetHudBroadcaster {
         if (current != null) {
             current.cancel();
         }
-        proxyServer.getChannelRegistrar().unregister(FORGE_1201_CHANNEL, SERVER_HUD_CHANNEL);
+        if (channelsRegistered) {
+            channelsRegistered = false;
+            proxyServer.getChannelRegistrar().unregister(FORGE_1201_CHANNEL, SERVER_HUD_CHANNEL);
+        }
     }
 
     private void broadcast() {

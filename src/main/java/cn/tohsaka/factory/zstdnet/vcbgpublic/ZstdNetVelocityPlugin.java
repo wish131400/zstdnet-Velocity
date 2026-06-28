@@ -64,21 +64,28 @@ public final class ZstdNetVelocityPlugin {
     @Subscribe
     public void onProxyInitialize(ProxyInitializeEvent event) throws IOException {
         this.config = VcbgPublicConfigLoader.load(dataDirectory, logger);
-        this.premiumProfileProvider = new MojangPremiumProfileProvider(
-                logger,
-                "https://sessionserver.mojang.com",
-                Duration.ofSeconds(5),
-                false
-        );
-        logger.info("zstdnet-velocity premium profile forwarding enabled");
+        if (config.premiumProfileForwarding()) {
+            this.premiumProfileProvider = new MojangPremiumProfileProvider(
+                    logger,
+                    "https://sessionserver.mojang.com",
+                    Duration.ofSeconds(5),
+                    false
+            );
+            logger.info("zstdnet-velocity premium profile forwarding enabled");
+        } else {
+            this.premiumProfileProvider = null;
+            logger.info("zstdnet-velocity premium profile forwarding disabled by config");
+        }
         ResolvedProxyProtocolSettings proxyProtocolSettings = resolveProxyProtocolSettings(config);
         this.tcpBridgeService.start(
                 config,
                 proxyProtocolSettings.upstreamProxyProtocol(),
                 proxyProtocolSettings.inboundProxyProtocol()
         );
-        if (this.tcpBridgeService.isRunning()) {
+        if (this.tcpBridgeService.isRunning() && config.clientHudSync()) {
             this.hudBroadcaster.start(config);
+        } else if (this.tcpBridgeService.isRunning()) {
+            logger.info("zstdnet-velocity client HUD sync disabled by config");
         }
         logger.info(
                 "zstdnet-velocity loaded: bridge_enabled={} listen={}:{} bridge_default_target_server={}",

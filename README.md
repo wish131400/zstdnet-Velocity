@@ -192,6 +192,14 @@ bridge_inbound_proxy_protocol=auto
 # 默认 false 会保留 Velocity/后端原始阈值，兼容 DAC 等会检查代理端报文形态的反作弊
 bridge_rewrite_compression_threshold=false
 
+# 是否由 Velocity 侧查询 Mojang 并补齐正版 UUID/签名皮肤 profile
+# 遇到登录后断开时，可先改成 false 交给 Velocity/PCF/TrueUUID/反作弊链路自行处理
+premium_profile_forwarding=true
+
+# 是否向 ZstdNet 客户端发送代理端 HUD 统计自定义通道
+# 默认 false，优先兼容代理端反作弊；确认客户端 ZstdNet 版本匹配后再打开
+client_hud_sync=false
+
 # 自定义 UDP 放行/转发规则，多个规则用英文逗号或分号分隔
 # 只写端口表示监听该 UDP 端口并转发到默认后端同端口
 # 完整格式：监听地址:端口->目标地址:端口
@@ -208,8 +216,10 @@ udp_custom_routes=24454, bedrock=0.0.0.0:19132->127.0.0.1:19132
 - `bridge_inbound_proxy_protocol` 是“前置代理到插件”的方向；公网监听 `0.0.0.0` 时不要直接信任客户端自带的 PROXY v2，只有确认桥接端口只被可信 FRP/LB 访问时才显式设为 `true`。
 - 入站 PROXY v2 只用于恢复玩家真实来源 IP；插件发给 Velocity 的 PROXY v2 目标地址始终是实际配置的 Velocity upstream，不透传前置代理传入的 target。
 - `bridge_rewrite_compression_threshold=false` 会保留 Velocity / 后端原始 vanilla compression 阈值，避免把 `256 -> 1048576` 这类阈值改写暴露给代理端反作弊；只有确认插件链路兼容且更看重压缩效率时才设为 `true`。
+- `premium_profile_forwarding=false` 会跳过 Velocity 侧 Mojang profile 修正，适合排查 DAC / TrueUUID / PCF 在登录后断开的兼容问题。
+- `client_hud_sync=false` 不会向客户端发送 `zstdnet:*` HUD 自定义通道包；这是默认值，优先保证能进服。需要客户端 HUD 统计时再改为 `true`。
 - `udp_custom_routes=24454` 会监听 `bridge_listen_host:24454` 并转发到默认后端的 `24454/udp`；也可以写成 `label=0.0.0.0:19132->127.0.0.1:19132` 指定日志名和目标。
-- 安装 1.4.2 或更新版本 ZstdNet 客户端 mod 的玩家会收到 Velocity 侧服务端 HUD 统计；插件会向 `zstdnet:server_hud` 以及 Forge 1.20.1 的 `zstdnet:lan_compression` 兼容通道发送快照。
+- `client_hud_sync=true` 时，安装 1.4.2 或更新版本 ZstdNet 客户端 mod 的玩家会收到 Velocity 侧服务端 HUD 统计；插件会向 `zstdnet:server_hud` 以及 Forge 1.20.1 的 `zstdnet:lan_compression` 兼容通道发送快照。
 
 ---
 

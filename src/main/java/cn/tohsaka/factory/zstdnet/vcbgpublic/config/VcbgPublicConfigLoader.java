@@ -45,6 +45,12 @@ public final class VcbgPublicConfigLoader {
         boolean bridgeRewriteCompressionThreshold = Boolean.parseBoolean(
                 properties.getProperty("bridge_rewrite_compression_threshold", "false").trim()
         );
+        boolean premiumProfileForwarding = Boolean.parseBoolean(
+                properties.getProperty("premium_profile_forwarding", "true").trim()
+        );
+        boolean clientHudSync = Boolean.parseBoolean(
+                properties.getProperty("client_hud_sync", "false").trim()
+        );
         boolean voiceChatPassthrough = Boolean.parseBoolean(properties.getProperty("voice_chat_passthrough", "true").trim());
         String voiceChatListen = properties.getProperty("voice_chat_listen", "").trim();
         String voiceChatTarget = properties.getProperty("voice_chat_target", "").trim();
@@ -62,7 +68,7 @@ public final class VcbgPublicConfigLoader {
         int burstBytes = parsePositiveInt(properties.getProperty("burst_bytes"), 262144);
 
         logger.info(
-                "zstdnet-velocity config loaded: bridge_enabled={} bridge_listen={}:{} bridge_default_target_server={} bridge_upstream_velocity={}:{} bridge_upstream_proxy_protocol={} bridge_inbound_proxy_protocol={} bridge_rewrite_compression_threshold={} voice_chat_passthrough={} voice_chat_listen={} voice_chat_target={} udp_custom_routes={} max_conn_per_ip={} max_req_per_window={} request_window={} ban_duration={} stats_interval={} level={} flush_interval={} idle_timeout={} rate_per_conn={} rate_global={} burst_bytes={}",
+                "zstdnet-velocity config loaded: bridge_enabled={} bridge_listen={}:{} bridge_default_target_server={} bridge_upstream_velocity={}:{} bridge_upstream_proxy_protocol={} bridge_inbound_proxy_protocol={} bridge_rewrite_compression_threshold={} premium_profile_forwarding={} client_hud_sync={} voice_chat_passthrough={} voice_chat_listen={} voice_chat_target={} udp_custom_routes={} max_conn_per_ip={} max_req_per_window={} request_window={} ban_duration={} stats_interval={} level={} flush_interval={} idle_timeout={} rate_per_conn={} rate_global={} burst_bytes={}",
                 bridgeEnabled,
                 printable(bridgeListenHost),
                 bridgeListenPort,
@@ -72,6 +78,8 @@ public final class VcbgPublicConfigLoader {
                 bridgeUpstreamProxyProtocol,
                 bridgeInboundProxyProtocol,
                 bridgeRewriteCompressionThreshold,
+                premiumProfileForwarding,
+                clientHudSync,
                 voiceChatPassthrough,
                 printable(voiceChatListen),
                 printable(voiceChatTarget),
@@ -99,6 +107,8 @@ public final class VcbgPublicConfigLoader {
                 bridgeUpstreamProxyProtocol,
                 bridgeInboundProxyProtocol,
                 bridgeRewriteCompressionThreshold,
+                premiumProfileForwarding,
+                clientHudSync,
                 voiceChatPassthrough,
                 voiceChatListen,
                 voiceChatTarget,
@@ -175,6 +185,16 @@ public final class VcbgPublicConfigLoader {
                 # false：保留 Velocity/后端原始阈值，兼容 DAC 等会检查代理端报文形态的反作弊。
                 # true：恢复旧版桥接侧重压缩优化，但可能不兼容部分代理端插件。
                 bridge_rewrite_compression_threshold=false
+
+                # 是否在 Velocity 的 GameProfileRequestEvent 阶段主动查询 Mojang 并写入正版 UUID/签名皮肤属性。
+                # true：保持旧行为，适合 TrueUUID/正版离线共存链路需要代理补齐 profile 的环境。
+                # false：完全交给 Velocity/PCF/TrueUUID/反作弊链路处理，排查 DAC 等登录后断开问题时可以先关闭。
+                premium_profile_forwarding=true
+
+                # 是否向安装 ZstdNet mod 的客户端发送 Velocity 侧 HUD 统计自定义通道。
+                # false：默认关闭附加 HUD 包，优先保证代理端反作弊和客户端握手兼容。
+                # true：启用 1.4.2+ 客户端 HUD 同步，会发送 zstdnet:server_hud / zstdnet:lan_compression。
+                client_hud_sync=false
 
                 # 是否启用语音/同端口 UDP 原样透传。
                 # true：尝试启动 UDP 转发，兼容 Sable/机械动力：航空学同端口 UDP，以及可选的 Simple Voice Chat UDP。
